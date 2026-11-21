@@ -1,0 +1,57 @@
+name: Build xiaozhi car firmware
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: espressif/idf:release-v5.5
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unpack source (accepts any uploaded zip)
+        shell: bash
+        run: |
+          set -e
+          echo "Files in repo:"; ls -l
+          mkdir -p unpack
+          Z="source.zip"
+          if [ ! -f "$Z" ]; then Z=$(ls -1 *.zip 2>/dev/null | head -1); fi
+          if [ -z "$Z" ]; then echo "ERROR: no zip found in repo root"; exit 1; fi
+          echo "Using archive: $Z"
+          unzip -q "$Z" -d unpack
+          for inner in $(find unpack -maxdepth 2 -name '*.zip'); do
+            echo "Nested archive: $inner"
+            unzip -q "$inner" -d unpack/inner || true
+          done
+          ROOT=$(dirname "$(find unpack -maxdepth 4 -name CMakeLists.txt | head -1)")
+          if [ -z "$ROOT" ] || [ ! -d "$ROOT" ]; then echo "ERROR: CMakeLists.txt not found"; exit 1; fi
+          echo "Source root: $ROOT"; ls "$ROOT" | head -30
+          echo "SRC_DIR=$ROOT" >> "$GITHUB_ENV"
+
+      - name: Build + merge single bin
+        shell: bash
+        working-directory: ${{ env.SRC_DIR }}
+        run: |
+          set -e
+          . $IDF_PATH/export.sh
+          idf.py -B build_c3 set-target esp32c3
+          idf.py -B build_c3 build
+          python -m esptool --chip esp32-c3 merge_bin -o 2.2.5XF_CUSTOM.bin \
+            --flash_mode dio --flash_freq 80m --flash_size 4MB \
+            0x0 build_c3/bootloader/bootloader.bin \
+            0x8000 build_c3/partition_table/partition-table.bin \
+            0xd000 build_c3/ota_data_initial.bin \
+            0x10000 build_c3/xiaozhi.bin \
+            0x280000 build_c3/generated_assets.bin
+          ls -l 2.2.5XF_CUSTOM.bin
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: 2.2.5XF_CUSTOM
+          path: ${{ env.SRC_DIR }}/2.2.5XF_CUSTOM.bin
+          if-no-files-found: error
